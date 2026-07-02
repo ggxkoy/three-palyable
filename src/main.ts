@@ -14,9 +14,17 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8f4f33);
 scene.fog = new THREE.Fog(0x8f4f33, 24, 55);
 
+const CAMERA_OFFSET = new THREE.Vector3(10, 17, 23);
 const camera = new THREE.OrthographicCamera(-7, 7, 12.5, -12.5, 0.1, 100);
-camera.position.set(10, 17, 23);
-camera.lookAt(0, 0, 8);
+camera.position.copy(CAMERA_OFFSET);
+camera.lookAt(0, 0, 0);
+camera.updateMatrixWorld(true); // force it now: matrixWorld would otherwise still be stale (identity) until the first render
+
+// The camera keeps this exact fixed offset/angle forever (translate-only, never rotated), so its
+// right/forward directions in world space are constant — compute them once and reuse for mapping
+// joystick drag input to world movement, instead of a fixed z-axis "forward" like a corridor game.
+const worldRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0); worldRight.y = 0; worldRight.normalize();
+const worldForward = new THREE.Vector3(); camera.getWorldDirection(worldForward); worldForward.y = 0; worldForward.normalize();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -71,62 +79,35 @@ function makeDynamicSprite(initial: string, color: string, bg: string, w = 420, 
 
 function flashPop(text: string) { popEl.textContent = text; popEl.classList.remove('pop'); void popEl.offsetWidth; popEl.classList.add('pop'); }
 
-// ---- Path: a winding polyline the carrier travels at constant speed via arc-length lookup. ----
-type Waypoint = { x: number; z: number };
-type PathSample = { point: THREE.Vector3; tangent: THREE.Vector3 };
-type PathTable = { waypoints: THREE.Vector3[]; cumulative: number[]; totalLength: number };
-
-function buildPathTable(pts: Waypoint[]): PathTable {
-  const waypoints = pts.map(w => new THREE.Vector3(w.x, 0, w.z));
-  const cumulative = [0];
-  for (let i = 1; i < waypoints.length; i++) cumulative.push(cumulative[i - 1] + waypoints[i].distanceTo(waypoints[i - 1]));
-  return { waypoints, cumulative, totalLength: cumulative[cumulative.length - 1] };
-}
-function sampleAtDistance(table: PathTable, distance: number): PathSample {
-  const d = THREE.MathUtils.clamp(distance, 0, table.totalLength);
-  let lo = 0, hi = table.cumulative.length - 1;
-  while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (table.cumulative[mid] <= d) lo = mid; else hi = mid; }
-  const segLen = table.cumulative[hi] - table.cumulative[lo];
-  const frac = segLen > 1e-6 ? (d - table.cumulative[lo]) / segLen : 0;
-  const point = table.waypoints[lo].clone().lerp(table.waypoints[hi], frac);
-  const tangent = table.waypoints[hi].clone().sub(table.waypoints[lo]).normalize();
-  return { point, tangent };
-}
-function perpOf(tangent: THREE.Vector3) { return new THREE.Vector3(-tangent.z, 0, tangent.x); }
-
-const LEVEL_WAYPOINTS: Waypoint[] = [
-  { x: 0, z: 14 }, { x: 0, z: 4 }, { x: 5, z: -4 }, { x: 5, z: -16 },
-  { x: -3, z: -24 }, { x: -3, z: -38 }, { x: 4, z: -46 }, { x: 4, z: -60 },
-  { x: -2, z: -68 }, { x: -2, z: -82 }, { x: 0, z: -92 },
-  { x: 4, z: -104 }, { x: -2, z: -118 }, { x: 0, z: -130 },
-];
-const pathTable = buildPathTable(LEVEL_WAYPOINTS);
-
-// ---- Terrain: ground + canyon walls that hug the winding path. ----
-const groundBounds = LEVEL_WAYPOINTS.reduce((b, w) => ({
-  minX: Math.min(b.minX, w.x), maxX: Math.max(b.maxX, w.x), minZ: Math.min(b.minZ, w.z), maxZ: Math.max(b.maxZ, w.z),
-}), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(groundBounds.maxX - groundBounds.minX + 26, groundBounds.maxZ - groundBounds.minZ + 26),
-  mat(0x8e5237),
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.set((groundBounds.minX + groundBounds.maxX) / 2, 0, (groundBounds.minZ + groundBounds.maxZ) / 2);
-ground.receiveShadow = true; world.add(ground);
+// ---- Open 2D map (placeholder layout, to be replaced against a hand-drawn map): a big arena the
+// carrier freely roams, split into three concentric zones by rock rings, each ring having a single
+// gap guarded by a toll gate. Bigger and genuinely 2D, not a single traversed path. ----
+const MAP_SOFT_RADIUS = 62;
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(150, 150), mat(0x8e5237));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; world.add(ground);
 
 const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-for (let d = 0; d <= pathTable.totalLength; d += 2.3) {
-  const s = sampleAtDistance(pathTable, d);
-  const perp = perpOf(s.tangent);
-  for (const side of [-1, 1]) {
-    const rock = new THREE.Mesh(rockGeo, rockMats[Math.abs(Math.floor(d)) % rockMats.length]);
-    const off = 7.4 + Math.random() * 1.3;
-    const p = s.point.clone().addScaledVector(perp, side * off);
-    rock.scale.set(1.4 + Math.random() * 1.2, 1.3 + Math.random() * 1.4, 1.2 + Math.random());
-    rock.position.set(p.x, .6 + Math.random() * .5, p.z);
+function buildRing(radius: number, gapAngle: number | null, gapWidth: number) {
+  const gapHalf = gapAngle === null ? 0 : Math.atan2(gapWidth / 2, radius);
+  const count = Math.round(radius * 0.95);
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    if (gapAngle !== null) {
+      const da = Math.atan2(Math.sin(angle - gapAngle), Math.cos(angle - gapAngle));
+      if (Math.abs(da) < gapHalf) continue;
+    }
+    const r = radius + (Math.random() - .5) * 3;
+    const rock = new THREE.Mesh(rockGeo, rockMats[i % rockMats.length]);
+    rock.scale.set(1.4 + Math.random() * 1.2, 1.3 + Math.random() * 1.6, 1.2 + Math.random());
+    rock.position.set(Math.cos(angle) * r, .6 + Math.random() * .5, Math.sin(angle) * r);
     rock.rotation.set(Math.random(), Math.random(), Math.random()); rock.castShadow = true; world.add(rock);
   }
 }
+const GATE1_ANGLE = Math.PI / 2, GATE1_RADIUS = 20;
+const GATE2_ANGLE = 0, GATE2_RADIUS = 40;
+buildRing(GATE1_RADIUS, GATE1_ANGLE, 16);
+buildRing(GATE2_RADIUS, GATE2_ANGLE, 16);
+buildRing(MAP_SOFT_RADIUS, null, 0);
 
 // ---- Ore tiers: blue -> gold -> pink -> white-diamond. ----
 const TOOL_YIELD_MULTIPLIER = [1, 1.6, 2.4, 3.6];
@@ -168,89 +149,90 @@ function updateParticles(dt: number) {
   particles = particles.filter(p => p.life > 0);
 }
 
-// ---- Ore deposits: sit on the path centerline, auto-mined as the carrier passes. ----
+// ---- Ore deposits: fixed points on the map, auto-mined when the carrier gets close enough. ----
+const MINE_RADIUS = 2;
 type OreTier = 0 | 1 | 2 | 3;
-type OreDeposit = { t: number; tier: OreTier; mesh: THREE.Mesh; collected: boolean };
-function buildDeposit(t: number, tier: OreTier): OreDeposit {
-  const s = sampleAtDistance(pathTable, t);
-  const perp = perpOf(s.tangent);
+type OreDeposit = { x: number; z: number; tier: OreTier; mesh: THREE.Mesh; collected: boolean };
+function buildDeposit(x: number, z: number, tier: OreTier): OreDeposit {
   const mesh = new THREE.Mesh(tierGeo[tier], tierMat[tier]);
-  const jitter = (Math.random() - .5) * .6;
-  mesh.position.copy(s.point).addScaledVector(perp, jitter); mesh.position.y = .34;
+  mesh.position.set(x, .34, z);
   mesh.rotation.set(Math.random(), Math.random(), Math.random()); mesh.castShadow = true; world.add(mesh);
-  return { t, tier, mesh, collected: false };
+  return { x, z, tier, mesh, collected: false };
 }
-const oreDepositDefs: { t: number; tier: OreTier }[] = [
-  { t: 6, tier: 0 }, { t: 10, tier: 0 }, { t: 14, tier: 0 }, { t: 18, tier: 0 }, { t: 24, tier: 0 },
-  { t: 30, tier: 1 }, { t: 36, tier: 1 },
-  { t: 55, tier: 2 }, { t: 60, tier: 1 }, { t: 65, tier: 2 }, { t: 70, tier: 1 }, { t: 85, tier: 2 },
-  { t: 110, tier: 2 }, { t: 120, tier: 3 }, { t: 125, tier: 2 }, { t: 140, tier: 3 },
+const oreDepositDefs: { x: number; z: number; tier: OreTier }[] = [
+  // Zone 1 (inner ring, radius < 20): tier 0, with a couple of tier-1 baits near the gate.
+  { x: 4, z: 3, tier: 0 }, { x: -6, z: 5, tier: 0 }, { x: -9, z: -4, tier: 0 }, { x: 3, z: -9, tier: 0 },
+  { x: 10, z: -6, tier: 0 }, { x: -4, z: 12, tier: 0 }, { x: 8, z: 10, tier: 0 },
+  { x: -3, z: 17, tier: 1 }, { x: 4, z: 18, tier: 1 },
+  // Zone 2 (between the two rings, radius 20-40): tier 1/2.
+  { x: 12, z: 24, tier: 1 }, { x: -14, z: 22, tier: 1 }, { x: 22, z: 18, tier: 2 },
+  { x: 20, z: -14, tier: 2 }, { x: 28, z: 8, tier: 2 },
+  // Zone 3 (beyond the outer ring, radius > 40): tier 2/3, near the chest.
+  { x: 46, z: 10, tier: 2 }, { x: 44, z: -18, tier: 3 }, { x: 34, z: -30, tier: 2 }, { x: 30, z: -42, tier: 3 },
 ];
-const oreDeposits: OreDeposit[] = oreDepositDefs.map(d => buildDeposit(d.t, d.tier));
+const oreDeposits: OreDeposit[] = oreDepositDefs.map(d => buildDeposit(d.x, d.z, d.tier));
 
 // ---- Upgrade kiosks: soft/missable, tap to spend currency and raise tool level. ----
 type Kiosk = {
-  t: number; cost: number; toToolLevel: number; purchased: boolean;
+  cost: number; toToolLevel: number; purchased: boolean;
   group: THREE.Group; padMesh: ReturnType<typeof box>; toolIconMesh: THREE.Mesh; costSign: ReturnType<typeof makeDynamicSprite>;
 };
-function buildKiosk(t: number, cost: number, toToolLevel: number, side: 1 | -1): Kiosk {
-  const s = sampleAtDistance(pathTable, t);
-  const perp = perpOf(s.tangent);
-  const pos = s.point.clone().addScaledVector(perp, side * 2.7);
-  const group = new THREE.Group(); group.position.copy(pos); world.add(group);
+function buildKiosk(x: number, z: number, cost: number, toToolLevel: number): Kiosk {
+  const group = new THREE.Group(); group.position.set(x, 0, z); world.add(group);
   const padMesh = box([1.3, .14, 1.3], 0x2e8f7a, [0, .07, 0], group);
   padMesh.userData.kind = 'kiosk';
   const toolIconMesh = new THREE.Mesh(new THREE.ConeGeometry(.32, .6, 6), mat(0xffcf36, .35, .6));
   toolIconMesh.position.set(0, .5, 0); toolIconMesh.castShadow = true; group.add(toolIconMesh);
   const costSign = makeDynamicSprite(String(cost), '#0d3a2e', '#7cf7c9');
   costSign.sprite.position.set(0, 1.55, 0); costSign.sprite.scale.set(2.2, .9, 1); group.add(costSign.sprite);
-  return { t, cost, toToolLevel, purchased: false, group, padMesh, toolIconMesh, costSign };
+  return { cost, toToolLevel, purchased: false, group, padMesh, toolIconMesh, costSign };
 }
 const kiosks: Kiosk[] = [
-  buildKiosk(20, 50, 1, 1),
-  buildKiosk(65, 90, 2, -1),
+  buildKiosk(6, 8, 50, 1),
+  buildKiosk(26, -10, 90, 2),
 ];
 
-// ---- Toll gates: hard-blocking, must be paid to continue; grants a lump-sum bonus after. ----
+// ---- Toll gates: block the *entire* ring radius (not just a small circle at the visual gap —
+// the rock rings are decorative only, with no collision of their own, so a localized blocker would
+// let the player just walk around it through the gap) until paid; grant a lump-sum bonus after. ----
 type TollGate = {
-  t: number; cost: number; rewardLumpSum: number; purchased: boolean;
+  x: number; z: number; ringRadius: number; cost: number; rewardLumpSum: number; purchased: boolean;
   group: THREE.Group; barMesh: ReturnType<typeof box>; padMesh: ReturnType<typeof box>; costSign: ReturnType<typeof makeDynamicSprite>;
 };
-const STOP_STANDOFF = 1.5;
-function buildGate(t: number, cost: number, rewardLumpSum: number): TollGate {
-  const s = sampleAtDistance(pathTable, t);
-  const yaw = Math.atan2(s.tangent.x, s.tangent.z);
-  const group = new THREE.Group(); group.position.copy(s.point); group.rotation.y = yaw; world.add(group);
-  const barMesh = box([6.5, 2.6, .4], 0xcc3b2e, [0, 1.3, 0], group);
+function buildGate(ringRadius: number, angle: number, cost: number, rewardLumpSum: number): TollGate {
+  const x = Math.cos(angle) * ringRadius, z = Math.sin(angle) * ringRadius;
+  const yaw = angle + Math.PI / 2; // face across the gap, not along the radius
+  const group = new THREE.Group(); group.position.set(x, 0, z); group.rotation.y = -yaw; world.add(group);
+  const barMesh = box([7, 2.6, .4], 0xcc3b2e, [0, 1.3, 0], group);
   barMesh.userData.kind = 'gate';
-  const padMesh = box([1.1, .14, 1.1], 0x8c39dd, [0, .07, 1.1], group);
+  const padMesh = box([1.1, .14, 1.1], 0x8c39dd, [0, .07, 1.6], group);
   padMesh.userData.kind = 'gate';
   const costSign = makeDynamicSprite(String(cost), '#3a2409', '#ffe27a');
   costSign.sprite.position.set(0, 3.2, 0); costSign.sprite.scale.set(2.6, 1.05, 1); group.add(costSign.sprite);
-  return { t, cost, rewardLumpSum, purchased: false, group, barMesh, padMesh, costSign };
+  return { x, z, ringRadius, cost, rewardLumpSum, purchased: false, group, barMesh, padMesh, costSign };
 }
 const tollGates: TollGate[] = [
-  buildGate(45, 80, 60),
-  buildGate(100, 100, 90),
+  buildGate(GATE1_RADIUS, GATE1_ANGLE, 80, 60),
+  buildGate(GATE2_RADIUS, GATE2_ANGLE, 100, 90),
 ];
 
-// ---- Opening beat: mash-tap a glowing ore capsule to crack it and kick off the run. ----
+// ---- Opening beat: mash-tap a glowing ore capsule to crack it before the carrier can move. ----
 type OpeningOre = { mesh: THREE.Mesh; hitsRequired: number; hitsSoFar: number; cracked: boolean };
 const OPENING_HITS_REQUIRED = 5;
 const OPENING_REWARD_CURRENCY = 40;
-const openingOreStart = sampleAtDistance(pathTable, 0).point.clone().add(new THREE.Vector3(0, 0, 3));
 const openingOreMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1.1, 0), new THREE.MeshStandardMaterial({ color: 0x5fd0ff, emissive: 0x1a8fd6, emissiveIntensity: .55, roughness: .2, metalness: .35 }));
-openingOreMesh.position.copy(openingOreStart); openingOreMesh.position.y = 1.1; openingOreMesh.castShadow = true;
+openingOreMesh.position.set(0, 1.1, 4); openingOreMesh.castShadow = true;
 openingOreMesh.userData.kind = 'openingOre'; world.add(openingOreMesh);
 const openingOre: OpeningOre = { mesh: openingOreMesh, hitsRequired: OPENING_HITS_REQUIRED, hitsSoFar: 0, cracked: false };
 
-// ---- Chest / ending. ----
-const chestPos = sampleAtDistance(pathTable, pathTable.totalLength).point;
-const chestGroup = new THREE.Group(); chestGroup.position.copy(chestPos); world.add(chestGroup);
+// ---- Chest / ending, out past the second ring. ----
+const CHEST_POS = new THREE.Vector3(26, 0, -45);
+const CHEST_RADIUS = 3;
+const chestGroup = new THREE.Group(); chestGroup.position.copy(CHEST_POS); world.add(chestGroup);
 box([1.7, 1, 1.2], 0x8a5a2e, [0, .5, 0], chestGroup);
 box([1.8, .4, 1.3], 0xffd23c, [0, 1.15, 0], chestGroup);
 
-// ---- Carrier: the small vehicle the camera follows; the player never steers it. ----
+// ---- Carrier: the small vehicle the player drives with a joystick-style drag. ----
 const carrierGroup = new THREE.Group(); world.add(carrierGroup);
 box([1.5, .55, 2], 0x2e8f7a, [0, .5, 0], carrierGroup);
 box([1.1, .5, 1], 0x7cf7c9, [0, .95, -.2], carrierGroup);
@@ -258,6 +240,7 @@ box([.16, .5, .16], 0x1c1c1c, [-.6, .3, .8], carrierGroup);
 box([.16, .5, .16], 0x1c1c1c, [.6, .3, .8], carrierGroup);
 box([.16, .5, .16], 0x1c1c1c, [-.6, .3, -.8], carrierGroup);
 box([.16, .5, .16], 0x1c1c1c, [.6, .3, -.8], carrierGroup);
+const carrierPos = new THREE.Vector3(0, 0, 0);
 
 // ---- Raycaster-based tap handling for kiosks, gates, and the opening ore. ----
 const raycaster = new THREE.Raycaster();
@@ -265,25 +248,45 @@ const interactables: THREE.Object3D[] = [openingOreMesh, ...kiosks.map(k => k.pa
 kiosks.forEach((k, i) => { k.padMesh.userData.index = i; });
 tollGates.forEach((g, i) => { g.barMesh.userData.index = i; g.padMesh.userData.index = i; });
 
-function handleTap(clientX: number, clientY: number) {
+function raycastAt(clientX: number, clientY: number) {
   const rect = renderer.domElement.getBoundingClientRect();
   const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const hit = raycaster.intersectObjects(interactables, false)[0]?.object;
-  if (!hit) return;
-  const kind = hit.userData.kind as 'kiosk' | 'gate' | 'openingOre';
-  if (kind === 'openingOre') handleOpeningOreTap();
-  else if (kind === 'kiosk') tryPurchaseKiosk(hit.userData.index as number);
-  else tryPurchaseGate(hit.userData.index as number);
+  return raycaster.intersectObjects(interactables, false)[0]?.object ?? null;
 }
-renderer.domElement.addEventListener('pointerdown', (e) => handleTap(e.clientX, e.clientY));
+
+// ---- Joystick-style drag: touch empty ground to move, release to stop dead. Tapping a button
+// (kiosk/gate/opening ore) is handled as a tap instead and never engages the joystick. ----
+let joystickActive = false, joystickDX = 0, joystickDY = 0, joystickOriginX = 0, joystickOriginY = 0;
+const JOYSTICK_RADIUS = 60;
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  const hit = raycastAt(e.clientX, e.clientY);
+  if (hit) {
+    const kind = hit.userData.kind as 'kiosk' | 'gate' | 'openingOre';
+    if (kind === 'openingOre') handleOpeningOreTap();
+    else if (kind === 'kiosk') tryPurchaseKiosk(hit.userData.index as number);
+    else tryPurchaseGate(hit.userData.index as number);
+    return;
+  }
+  joystickActive = true; joystickOriginX = e.clientX; joystickOriginY = e.clientY; joystickDX = 0; joystickDY = 0;
+  hintEl.style.opacity = '0';
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!joystickActive) return;
+  const dx = THREE.MathUtils.clamp(e.clientX - joystickOriginX, -JOYSTICK_RADIUS, JOYSTICK_RADIUS);
+  const dy = THREE.MathUtils.clamp(e.clientY - joystickOriginY, -JOYSTICK_RADIUS, JOYSTICK_RADIUS);
+  joystickDX = dx / JOYSTICK_RADIUS; joystickDY = dy / JOYSTICK_RADIUS;
+});
+function stopJoystick() { joystickActive = false; joystickDX = 0; joystickDY = 0; }
+renderer.domElement.addEventListener('pointerup', stopJoystick);
+renderer.domElement.addEventListener('pointercancel', stopJoystick);
 
 // ---- Run state. ----
 type RunState = { currency: number; toolLevel: number; phase: 'opening' | 'traveling' | 'finished' };
-type CarrierState = { distance: number; speed: number; baseSpeed: number; stoppedAtGate: number | null };
-const BASE_SPEED = 3.2;
+const CARRIER_SPEED = 6.5;
 const run: RunState = { currency: 0, toolLevel: 0, phase: 'opening' };
-const carrier: CarrierState = { distance: 0, speed: 0, baseSpeed: BASE_SPEED, stoppedAtGate: null };
 let lastObjective = '', last = performance.now();
 
 function refreshDepositLockVisuals() {
@@ -305,7 +308,6 @@ function handleOpeningOreTap() {
     flashPop('出发!');
     hintEl.style.opacity = '0';
     run.phase = 'traveling';
-    carrier.speed = carrier.baseSpeed;
   }
 }
 
@@ -330,8 +332,7 @@ function tryPurchaseGate(index: number) {
   g.costSign.draw('通过!'); g.padMesh.material.color.set(0x35e07a);
   flashPop('通行!');
   spawnBurst(g.group.position, 0xcc3b2e, 12);
-  g.barMesh.userData.retract = true; // eased down out of the way in updateGateBarriers()
-  if (carrier.stoppedAtGate === index) carrier.stoppedAtGate = null;
+  g.barMesh.userData.retract = true; // eased down out of the way in update()
   setTimeout(() => {
     run.currency += g.rewardLumpSum; scoreEl.textContent = String(run.currency);
     flashPop(`+${g.rewardLumpSum}`);
@@ -345,11 +346,9 @@ function reset() {
   openingOre.cracked = false; openingOre.hitsSoFar = 0; openingOre.mesh.scale.setScalar(1); world.add(openingOre.mesh);
   for (const p of particles) world.remove(p.mesh); particles = [];
   run.currency = 0; run.toolLevel = 0; run.phase = 'opening';
-  carrier.distance = 0; carrier.speed = 0; carrier.stoppedAtGate = null;
-  const start = sampleAtDistance(pathTable, 0);
-  carrierGroup.position.copy(start.point); carrierGroup.rotation.y = Math.atan2(start.tangent.x, start.tangent.z);
-  const startPerp = perpOf(start.tangent);
-  camera.position.copy(start.point).add(new THREE.Vector3(0, CAMERA_UP, 0)).addScaledVector(start.tangent, -CAMERA_BACK).addScaledVector(startPerp, CAMERA_SIDE);
+  carrierPos.set(0, 0, 0); carrierGroup.position.copy(carrierPos); carrierGroup.rotation.y = 0;
+  stopJoystick();
+  camera.position.copy(carrierPos).add(CAMERA_OFFSET);
   refreshDepositLockVisuals();
   lastObjective = '';
   scoreEl.textContent = '0'; resultEl.hidden = true; hintEl.style.opacity = '1';
@@ -359,23 +358,32 @@ restartBtn.addEventListener('click', reset);
 
 function updateCarrier(dt: number) {
   if (run.phase !== 'traveling') return;
-  if (carrier.stoppedAtGate !== null) return;
-  let next = carrier.distance + carrier.speed * dt;
-  for (let i = 0; i < tollGates.length; i++) {
-    const g = tollGates[i];
+  const strength = Math.min(1, Math.hypot(joystickDX, joystickDY));
+  if (strength < .02) return;
+  const moveDir = worldRight.clone().multiplyScalar(joystickDX).add(worldForward.clone().multiplyScalar(-joystickDY));
+  if (moveDir.lengthSq() < 1e-6) return;
+  moveDir.normalize();
+  let nextX = carrierPos.x + moveDir.x * CARRIER_SPEED * strength * dt;
+  let nextZ = carrierPos.z + moveDir.z * CARRIER_SPEED * strength * dt;
+
+  // Unpaid gates block the whole ring's circumference, not just the visual gap — otherwise the
+  // player could just walk around the small blocker through the rock-free gap next to it.
+  for (const g of tollGates) {
     if (g.purchased) continue;
-    const stopAt = g.t - STOP_STANDOFF;
-    if (carrier.distance < stopAt && next >= stopAt) { next = stopAt; carrier.stoppedAtGate = i; break; }
+    const distFromOrigin = Math.hypot(nextX, nextZ);
+    if (distFromOrigin >= g.ringRadius) { const s = (g.ringRadius - .05) / distFromOrigin; nextX *= s; nextZ *= s; }
   }
-  carrier.distance = Math.min(next, pathTable.totalLength);
-  const s = sampleAtDistance(pathTable, carrier.distance);
-  carrierGroup.position.copy(s.point);
-  carrierGroup.rotation.y = Math.atan2(s.tangent.x, s.tangent.z);
+  const distFromCenter = Math.hypot(nextX, nextZ);
+  if (distFromCenter > MAP_SOFT_RADIUS) { const s = MAP_SOFT_RADIUS / distFromCenter; nextX *= s; nextZ *= s; }
+
+  carrierPos.set(nextX, 0, nextZ);
+  carrierGroup.position.copy(carrierPos);
+  carrierGroup.rotation.y = Math.atan2(moveDir.x, moveDir.z);
 }
 
 function updateMining() {
   for (const d of oreDeposits) {
-    if (d.collected || carrier.distance < d.t) continue;
+    if (d.collected || carrierPos.distanceTo(d.mesh.position) > MINE_RADIUS) continue;
     d.collected = true;
     const mult = run.toolLevel >= d.tier ? TOOL_YIELD_MULTIPLIER[run.toolLevel] : LOCKED_YIELD_FRACTION;
     run.currency += Math.round(DEPOSIT_BASE_VALUE[d.tier] * mult);
@@ -390,19 +398,9 @@ function updateStationAffordability() {
   for (const g of tollGates) if (!g.purchased) g.padMesh.material.emissiveIntensity = run.currency >= g.cost ? .6 : 0;
 }
 
-// Same iso "up + behind + to one side" offset as before, but expressed in the path's own local
-// frame (tangent/perpendicular) instead of fixed world axes. Anything placed using perpOf(tangent)
-// (kiosks, gates, deposits) then stays at a consistent relative screen position as the path turns —
-// with a world-fixed offset, the camera's "left/right" would drift away from the path's "left/right"
-// on a turn and side-placed kiosks could end up off-screen. Still translate-only; no camera rotation.
-const CAMERA_UP = 17, CAMERA_BACK = 23, CAMERA_SIDE = 10;
-const LOOKAHEAD_DISTANCE = 6;
 function updateCamera(dt: number) {
-  const s = sampleAtDistance(pathTable, carrier.distance);
-  const perp = perpOf(s.tangent);
-  const offset = new THREE.Vector3(0, CAMERA_UP, 0).addScaledVector(s.tangent, -CAMERA_BACK).addScaledVector(perp, CAMERA_SIDE);
-  camera.position.lerp(s.point.clone().add(offset), Math.min(1, dt * 2.2));
-  camera.lookAt(s.point.clone().addScaledVector(s.tangent, LOOKAHEAD_DISTANCE));
+  camera.position.lerp(carrierPos.clone().add(CAMERA_OFFSET), Math.min(1, dt * 4));
+  camera.lookAt(carrierPos);
 }
 
 function update(dt: number) {
@@ -414,7 +412,7 @@ function update(dt: number) {
   updateParticles(dt);
 
   openingOre.mesh.rotation.y += dt * .6;
-  for (const k of kiosks) k.group.position.y = Math.sin(performance.now() * .002 + k.t) * .05;
+  for (const k of kiosks) k.group.position.y = Math.sin(performance.now() * .002 + k.cost) * .05;
   for (const g of tollGates) if (g.barMesh.userData.retract) g.barMesh.position.y += (-3 - g.barMesh.position.y) * Math.min(1, dt * 3);
 
   let objective = '';
@@ -422,11 +420,11 @@ function update(dt: number) {
   else {
     const gate = tollGates.find(g => !g.purchased);
     if (gate) { const need = gate.cost - run.currency; objective = need > 0 ? `还需 ${need} 金币解锁下一区域` : '资金充足，点击关卡通行！'; }
-    else objective = '冲向终点，收集宝箱！';
+    else objective = '前往宝箱，收集本轮成果！';
   }
   if (objective !== lastObjective) { objectiveEl.textContent = objective; lastObjective = objective; }
 
-  if (run.phase === 'traveling' && carrier.distance >= pathTable.totalLength - 3) {
+  if (run.phase === 'traveling' && carrierPos.distanceTo(CHEST_POS) < CHEST_RADIUS) {
     run.phase = 'finished';
     finalScoreEl.textContent = String(run.currency);
     objectiveEl.style.opacity = '0';
