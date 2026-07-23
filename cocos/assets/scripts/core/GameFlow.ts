@@ -1,4 +1,4 @@
-import { _decorator, Component, Node } from 'cc';
+import { _decorator, Component } from 'cc';
 import { EventBus } from './EventBus';
 import { GameEvents } from './GameEvents';
 import { TriggerZone } from './TriggerZone';
@@ -11,36 +11,31 @@ export enum GameState {
 }
 
 /**
- * 游戏流程状态机 + 计分中枢。场景里唯一常驻的"导演"节点。
- * 只通过事件总线与其它模块通信；终点判定复用 TriggerZone
- * （在终点位置摆一个 filter=DOZER、eventName=LEVEL_FINISHED 的触发区即可，
- * 不需要写任何终点代码）。
+ * 流程状态机 + 计分中枢。场景里唯一常驻的"导演"。
+ * 分数来自 DELIVERED（投递区已含累计逻辑，这里做总账 + 目标判定）。
+ * 只经事件总线通信，任何模块删掉都不报错。
  */
 @ccclass('GameFlow')
 export class GameFlow extends Component {
-  @property({ tooltip: '结算面板弹出前的延迟（秒）' })
-  resultDelay = 0.45;
+  @property({ tooltip: '目标分数，达到即通关；<=0 表示无目标（纯计分/靠终点线结束）' })
+  targetScore = 0;
 
   state: GameState = GameState.IDLE;
   score = 0;
 
   onLoad() {
     EventBus.on(GameEvents.INPUT_START, this.onInputStart, this);
-    EventBus.on(GameEvents.GEM_COLLECTED, this.onGemCollected, this);
-    EventBus.on(GameEvents.GEM_DESTROYED, this.onGemDestroyed, this);
+    EventBus.on(GameEvents.DELIVERED, this.onDelivered, this);
     EventBus.on(GameEvents.LEVEL_FINISHED, this.onLevelFinished, this);
   }
 
-  onDestroy() {
-    EventBus.targetOff(this);
-  }
+  onDestroy() { EventBus.targetOff(this); }
 
   /** 结算面板"再来一次"按钮的编辑器回调 */
   restart() {
     this.state = GameState.IDLE;
     this.score = 0;
     EventBus.emit(GameEvents.SCORE_CHANGED, 0);
-    // 场景里所有触发区清掉"只触发一次"记录
     for (const zone of this.node.scene.getComponentsInChildren(TriggerZone)) zone.resetTriggered();
     EventBus.emit(GameEvents.LEVEL_RESET);
   }
@@ -49,19 +44,17 @@ export class GameFlow extends Component {
     if (this.state === GameState.IDLE) this.state = GameState.PLAYING;
   }
 
-  private onGemCollected(_gem: Node, value: number) {
+  private onDelivered(amount: number) {
     if (this.state !== GameState.PLAYING) return;
-    this.score += value;
-    EventBus.emit(GameEvents.SCORE_CHANGED, this.score);
-  }
-
-  private onGemDestroyed(_gem: Node, penalty: number) {
-    if (this.state !== GameState.PLAYING || penalty <= 0) return;
-    this.score = Math.max(0, this.score - penalty);
-    EventBus.emit(GameEvents.SCORE_CHANGED, this.score);
+    this.score += amount;
+    EventBus.emit(GameEvents.SCORE_CHANGED, Math.floor(this.score));
+    if (this.targetScore > 0 && this.score >= this.targetScore) {
+      EventBus.emit(GameEvents.LEVEL_FINISHED);
+    }
   }
 
   private onLevelFinished() {
+    if (this.state === GameState.FINISHED) return;
     this.state = GameState.FINISHED;
   }
 }

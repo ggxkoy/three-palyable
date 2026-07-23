@@ -1,13 +1,13 @@
 {
+  "fields": [
+    { "x": 0, "z": 4, "nodeCount": 28, "radiusX": 5.5, "radiusZ": 9, "amountMin": 25, "amountMax": 55 }
+  ],
   "gates": [
-    { "x": 0, "z": -5, "width": 8.1, "multiplier": 2 }
+    { "x": 0, "z": -6, "width": 8.1, "multiplier": 2 }
   ],
   "hazards": [
-    { "x": 0, "z": -11, "width": 18, "depth": 5.2, "penalty": 0 }
+    { "x": 0, "z": -12, "width": 18, "lossRatio": 1 }
   ],
-  "spawners": [
-    { "x": 0, "z": 7, "count": 145, "radiusX": 5.2, "radiusZ": 7.3 }
-  ],
-  "collect": { "x": 0, "z": -24.5, "radius": 5.2 },
-  "finishZ": -25.5
+  "delivery": { "x": 0, "z": -24, "rate": 140 },
+  "targetScore": 0
 }

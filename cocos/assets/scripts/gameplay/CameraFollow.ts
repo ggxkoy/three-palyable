@@ -4,41 +4,49 @@ import { GameEvents } from '../core/GameEvents';
 const { ccclass, property } = _decorator;
 
 /**
- * 相机跟随：沿 z 轴平滑跟随目标。
- * LEVEL_RESET 时立即回到初始位置（three.js 原版重开一局时相机会慢慢飘回，
- * 这里直接硬切，避免开局画面倒退）。
+ * 相机跟随：主角在场地里自由走位，相机按固定偏移平滑跟随其 X/Z。
+ * LEVEL_RESET 时硬切回初始相对位，避免开局镜头飘移。
  */
 @ccclass('CameraFollow')
 export class CameraFollow extends Component {
-  @property({ type: Node, tooltip: '跟随目标（推土机）' })
+  @property({ type: Node, tooltip: '跟随目标（主角）' })
   target: Node | null = null;
 
-  @property({ tooltip: '相机 z 相对目标的偏移' })
-  offsetZ = 9;
-
   @property({ tooltip: '跟随平滑系数' })
-  followLerp = 2.2;
+  followLerp = 6;
 
-  private _startPos = new Vec3();
+  @property({ tooltip: '是否跟随 X 轴（false 则相机只沿 Z 跟随）' })
+  followX = true;
+
+  private _offset = new Vec3();
+  private _inited = false;
 
   onLoad() {
-    this.node.getPosition(this._startPos);
     EventBus.on(GameEvents.LEVEL_RESET, this.onReset, this);
   }
+  onDestroy() { EventBus.targetOff(this); }
 
-  onDestroy() {
-    EventBus.targetOff(this);
+  start() {
+    if (this.target) {
+      Vec3.subtract(this._offset, this.node.position, this.target.position);
+      this._inited = true;
+    }
   }
 
   lateUpdate(dt: number) {
-    if (!this.target) return;
+    if (!this.target || !this._inited) return;
     const p = this.node.position;
-    const targetZ = this.target.position.z + this.offsetZ;
-    const z = p.z + (targetZ - p.z) * Math.min(1, dt * this.followLerp);
-    this.node.setPosition(p.x, p.y, z);
+    const t = this.target.position;
+    const goalX = this.followX ? t.x + this._offset.x : p.x;
+    const goalZ = t.z + this._offset.z;
+    const k = Math.min(1, dt * this.followLerp);
+    this.node.setPosition(p.x + (goalX - p.x) * k, p.y, p.z + (goalZ - p.z) * k);
   }
 
   private onReset() {
-    this.node.setPosition(this._startPos);
+    if (this.target && this._inited) {
+      const t = this.target.position;
+      this.node.setPosition(t.x + this._offset.x, this.node.position.y, t.z + this._offset.z);
+    }
   }
 }
