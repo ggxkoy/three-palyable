@@ -1,81 +1,60 @@
-import { _decorator, Component, Node, Vec3, tween, math } from 'cc';
+import { _decorator, Component, Node, Prefab, instantiate, Vec3 } from 'cc';
 import { EventBus } from '../core/EventBus';
 import { GameEvents } from '../core/GameEvents';
-import { Prims } from '../core/Prims';
 const { ccclass, property } = _decorator;
 
-const CRYSTAL = { color: 0x3ce0ff, roughness: 0.24, metallic: 0.35, emissive: 0x06456b };
-
 /**
- * 携带堆表现：随携带量在铲刀前方堆起真正的 3D 水晶堆 —— 最直观的"爽"反馈。
- * 挂在主角车头前的锚点上，只订阅 CARRY_CHANGED，用对象池增减，
- * 不参与任何玩法逻辑。
+ * 携带堆表现：随携带量在主角身上堆叠方块，量越多堆越高 —— 最直观的"爽"反馈。
+ * 只订阅 CARRY_CHANGED，用对象池增减方块，不参与任何玩法逻辑。
+ *
+ * 挂在主角的一个子节点（堆叠锚点）上，itemPrefab 指向单个货物模型。
  */
 @ccclass('CarryStack')
 export class CarryStack extends Component {
-  @property({ tooltip: '最多显示多少颗水晶' })
-  maxVisible = 42;
+  @property({ type: Prefab, tooltip: '单个货物的表现 Prefab' })
+  itemPrefab: Prefab | null = null;
 
-  @property({ tooltip: '每排几颗（横向）' })
-  perRow = 5;
+  @property({ tooltip: '最多显示多少个方块（携带量超出后只增高不增数）' })
+  maxVisible = 40;
 
-  @property({ tooltip: '每层几排（纵向）' })
-  rowsPerLayer = 3;
+  @property({ tooltip: '每层几个' })
+  perRow = 4;
 
-  @property({ tooltip: '水晶间距' })
-  spacing = 0.34;
+  @property({ tooltip: '方块间距' })
+  spacing = 0.32;
 
-  @property({ tooltip: '每多少携带量对应一颗水晶' })
-  unitsPerItem = 6;
+  @property({ tooltip: '每多少携带量对应一个可见方块' })
+  unitsPerItem = 5;
 
   private _pool: Node[] = [];
-  private _shown = 0;
 
   onLoad() {
     EventBus.on(GameEvents.CARRY_CHANGED, this.onCarry, this);
-    EventBus.on(GameEvents.LEVEL_RESET, this.onResetStack, this);
+    EventBus.on(GameEvents.LEVEL_RESET, () => this.onCarry(0), this);
   }
 
   onDestroy() { EventBus.targetOff(this); }
 
-  private onResetStack() { this.onCarry(0); }
-
   private onCarry(carrying: number) {
+    if (!this.itemPrefab) return;
     const want = Math.min(this.maxVisible, Math.floor(carrying / this.unitsPerItem));
-    if (want === this._shown) return;
-
     while (this._pool.length < want) {
-      const i = this._pool.length;
-      const item = Prims.gem('Carry', this.node, 0.16, this.slot(i), CRYSTAL, 4);
-      item.setRotationFromEuler(math.randomRange(0, 360), math.randomRange(0, 360), 0);
+      const item = instantiate(this.itemPrefab);
+      this.node.addChild(item);
       this._pool.push(item);
     }
     for (let i = 0; i < this._pool.length; i++) {
-      const on = i < want;
-      const item = this._pool[i];
-      if (on && !item.active) {
-        // 新增的水晶弹一下，堆量增长有手感
-        item.active = true;
-        item.setScale(0.06, 0.06, 0.06);
-        tween(item).to(0.18, { scale: new Vec3(0.32, 0.32, 0.32) }, { easing: 'backOut' }).start();
-      } else if (!on && item.active) {
-        item.active = false;
-      }
+      const active = i < want;
+      this._pool[i].active = active;
+      if (active) this._pool[i].setPosition(this.slot(i));
     }
-    this._shown = want;
   }
 
-  /** 从铲刀往前一排排、一层层地堆开 */
-  private slot(i: number): [number, number, number] {
-    const perLayer = this.perRow * this.rowsPerLayer;
-    const layer = Math.floor(i / perLayer);
-    const within = i % perLayer;
-    const row = Math.floor(within / this.perRow);
-    const col = within % this.perRow;
-    return [
-      (col - (this.perRow - 1) / 2) * this.spacing,
-      layer * this.spacing * 0.8,
-      row * this.spacing * 0.85,
-    ];
+  private slot(i: number): Vec3 {
+    const layer = Math.floor(i / this.perRow);
+    const col = i % this.perRow;
+    const x = (col - (this.perRow - 1) / 2) * this.spacing;
+    const y = layer * this.spacing;
+    return new Vec3(x, y, 0);
   }
 }

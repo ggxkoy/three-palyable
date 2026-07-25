@@ -1,9 +1,10 @@
 {
-  "name": "canyon-courier-3d",
-  "version": "1.0.0",
-  "uuid": "2f7d81c4-6b93-4e05-a1d8-74c9f3b2e618",
+  "name": "canyon-dozer-cocos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "3d",
+  "uuid": "4493fc76-db19-4c8b-9962-d1599884e4f8",
   "creator": {
-    "version": "3.8.6"
-  },
-  "type": "3d"
+    "version": "3.8.8"
+  }
 }

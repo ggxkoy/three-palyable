@@ -1,77 +1,46 @@
-# Canyon Courier 3D — 可直接运行的 Cocos Creator 工程
+# Canyon Dozer — Cocos Creator 3.8.8 工程
 
-竖屏 playable，**3D 版**。玩法为快递员自动收集：玩家只用摇杆操纵推土机在场地里走位，
-靠近资源自动装货、进投递区自动卸货计分、带货穿倍率门整堆翻倍、踩岩浆掉光。
+这是从 `ggxkoy/three-palyable` 的 `claude/cocos-blueprint-modules` 分支整理出的独立 Cocos Creator 工程。
 
-## 直接跑起来
+## 打开方式
 
-1. Cocos Creator **3.8+** → 打开项目 → 选择本目录 `cocos-project-3d/`。
-2. 打开 `assets/scenes/main.scene`，点预览（▶）。
+1. 启动 Cocos Dashboard 或 Cocos Creator 3.8.8。
+2. 选择“导入项目”。
+3. 选择本目录。
+4. 首次打开时等待资源导入和 TypeScript 编译完成。
 
-**不需要任何模型资源，也不需要拼节点或 Prefab。** 世界里的每个物件
-（推土机、水晶、岩壁、岩浆、倍率门、投递台）都是用 Cocos 内置的参数化几何体
-（box / sphere / cylinder / torus / plane）在运行时生成的，材质也由代码创建 ——
-见 `assets/scripts/core/Prims.ts` 和 `Bootstrap.ts`。
-
-> 若 `main.scene` 因编辑器版本差异打不开：新建一个空场景直接预览即可，效果一样。
-> Bootstrap 在脚本加载时挂 `Director.EVENT_AFTER_SCENE_LAUNCH`，任何场景启动都会自动装配。
-
-## 3D 与 2D 版的区别
-
-| | 3D（本目录） | 2D（`cocos-project/`） |
-| --- | --- | --- |
-| 世界表现 | 内置几何体 + 双平行光 | sprite 图片 |
-| 判定平面 | XZ（贴地） | XY |
-| 相机 | 正交 3/4 俯视（俯角 60°），跟随主角 | UI 正交，滚动世界节点 |
-| 资源 | 无需图片（UI 除外） | 12 张生成的 PNG |
-
-两版的玩法逻辑、事件总线、模块划分完全一致，`DeliveryZone` / `MultiplierGate` /
-`Hazard` / `GameFlow` / `HUD` 等模块是同一份代码。
-
-## 无头玩法验证
-
-玩法逻辑可以脱离 Cocos 编辑器验证：用假的 `cc` 运行时在 Node 里跑完整链路，
-**28 项断言**（含 XZ 平面判定与摇杆→世界方向映射）。
+也可以在 macOS 终端运行：
 
 ```bash
-cd tools/sim
-npm install
-npm test
+/Applications/Cocos/Creator/3.8.8/CocosCreator.app/Contents/MacOS/CocosCreator --project "$(pwd)"
 ```
 
-## 调"爽"的旋钮
+## 当前内容
 
-| 想要 | 改哪里 |
-| --- | --- |
-| 资源点更密集 | `Bootstrap.ts` 里 `rf.nodeCount`（默认 30，抖动网格保证撒满） |
-| 装货更快、数字蹦更猛 | `ResourceField.pickupRate` / `DeliveryZone.deliverRate` |
-| 能囤更多再一次性投递 | `Hero.capacity`（默认 240） |
-| 倍率门收益上限 | `Hero.overflowFactor`（默认 2 → 携带最高 480） |
-| 主角更灵活 | `Hero.moveSpeed`（默认 8 单位/秒）、`turnLerp` |
-| 镜头远近 / 俯角 | `Bootstrap.ts` 里 `cam.orthoHeight`、`MainCamera` 的欧拉角 |
-| 场地范围、各区位置 | `Bootstrap.ts` 顶部的 `L` 常量表 |
-| 配色 | `Bootstrap.ts` 顶部的 `M` 材质表 |
+- `assets/scripts/core/`：事件、流程、输入、触发区和关卡加载。
+- `assets/scripts/reference/`：参考视频玩法，包括推土机、动态资源、倍率门、铺桥和 HUD。
+- `assets/scripts/gameplay/`：原蓝图分支的快递员模块，作为模块化设计参考保留。
+- `assets/scripts/ui/`：HUD。
+- `assets/data/levels/level01.json`：关卡布局数据。
+- `docs/`：原分支蓝图说明与设计文档。
 
-## 可选：打开阴影
+本工程已整理为 Cocos Creator 可识别、可直接预览的项目结构。由于原分支没有提供场景、Prefab 和美术资产，`assets/scenes/main.scene` 会通过 `PlayableBootstrap` 在运行时使用基础几何体组装一关。当前激活的玩法以 `reference/source.mp4` 为主参考；正式制作时可逐步替换成美术模型和 Prefab。
 
-为降低首次运行的风险，工程没有动场景全局设置，所以默认没有实时阴影
-（靠主光 + 补光双平行光塑形）。想要阴影：在编辑器里选中场景根节点，
-在属性面板的 **Shadows** 里勾选 `Enabled` 并把 type 设为 `ShadowMap`，
-再把 `KeyLight` 的 `Shadow Enabled` 打开即可。
+## 操作方式
 
-## 目录
+- 鼠标或触屏：按住并向目标方向拖动。
+- 桌面键盘：WASD 或方向键。
+- 目标：驾驶黄色推土机推动蓝色宝石，穿过橙色 ×10 刷门将其转换为金币，再把金币推进收集槽完成岩浆桥并进入新区。
 
-```
-assets/
-  scenes/main.scene           空场景（内容由 Bootstrap 运行时生成）
-  resources/sprites/          仅 UI 用的 3 张图（HUD 底板、摇杆）
-  scripts/
-    Bootstrap.ts              运行时搭建整个 3D 游戏
-    core/                     Prims（几何体/材质工具）, EventBus, GameEvents,
-                              TriggerZone, MoveInput, GameFlow, Sprites
-    gameplay/                 Hero, ResourceNode, ResourceField, DeliveryZone,
-                              MultiplierGate, Hazard, CarryStack, CameraFollow
-    ui/                       HUD
-tools/sim/                    无头玩法验证（假 cc 运行时 + 28 项断言）
-docs/design.md                架构、事件清单、组件属性表
-```
+## 验证结果
+
+- Cocos Creator 3.8.8：项目可导入并正常启动。
+- 资源数据库：推土机玩法组件、原蓝图脚本、主场景及关卡数据均已完成导入，`.meta` 文件已由编辑器生成。
+- TypeScript：使用 Cocos Creator 3.8.8 内置编译器检查通过。
+- 编辑器日志：重新导入后没有项目脚本错误或警告。
+- Web Mobile：构建产物位于 `build/web-mobile/`，已在浏览器实际运行。
+- 玩法诊断：自动路线完成动态资源推动、×10 转换、250/250 铺桥、跨越岩浆和新区解锁；运行时控制台无新增错误或警告。
+
+整理时修正了 `Hero.maxZ` 的编辑器属性类型声明：Cocos Creator 3.8 要求显式数值属性使用 `CCFloat` 或 `CCInteger`，不能使用空类型或通用 `Number`。
+
+诊断模式仅用于回归测试：在 Web 地址后添加 `?autotest=1`，推土机会自动跑完整条验证路线，普通地址不受影响。

@@ -1,14 +1,13 @@
-# Cocos Creator 生成物
-library/
-temp/
-local/
-build/
-profiles/
-native/
+# Cocos Creator generated data
+/library/
+/temp/
+/local/
+/build/
+/profiles/
+/native/engine/android/**/*/assets
 
-# 注意：.meta 不要忽略 —— 首次在编辑器打开时会生成，之后应当提交，
-# 它保存了资源 UUID，团队协作和构建都依赖它。
-
-# 无头验证的编译产物
-tools/sim/out/
+# Dependencies and editor state
 node_modules/
+.vscode/
+.idea/
+.DS_Store

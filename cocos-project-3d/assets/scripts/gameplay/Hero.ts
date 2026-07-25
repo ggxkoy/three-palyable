@@ -1,51 +1,44 @@
-import { _decorator, Component, Vec3, math } from 'cc';
+import { _decorator, CCFloat, Component, Vec3, math } from 'cc';
 import { EventBus } from '../core/EventBus';
 import { GameEvents } from '../core/GameEvents';
 const { ccclass, property } = _decorator;
 
 /**
- * 主角（推土机快递员）。玩家只操纵它在 XZ 平面走位，其余全自动：
- *  - 靠近资源点 → ResourceNode 每帧调 addCarry() 装货
- *  - 进投递区   → DeliveryZone 每帧调 takeCarry() 卸货计分
- *  - 穿倍率门   → MultiplierGate 调 multiplyCarry() 整堆翻倍
- *  - 踩危险区   → Hazard 调 dropAll() 掉光
- * 本组件只管：按方向移动 + 转向 + 携带量账本 + 广播变化。
+ * 主角（快递员）。玩家只操纵它走位，其余全自动：
+ *  - 靠近资源点 → ResourceNode 每帧调用 addCarry() 往身上装货
+ *  - 到投递区   → DeliveryZone 每帧调用 takeCarry() 卸货计分
+ *  - 穿过倍率门 → MultiplierGate 调用 multiplyCarry() 翻倍
+ * 本组件自己只管：按方向移动 + 记录携带量 + 广播携带变化。
  *
- * 模型朝 +Z 搭建，因此 yaw = atan2(dirX, dirZ) 即可对准移动方向。
+ * 节点要求：Kinematic RigidBody + 一个 Collider（非 trigger），
+ * 好让资源点/投递区的 isTrigger 检测到它。同节点还需挂一个 `Hero` 标记
+ * （即本组件类名，TriggerZone 用 getComponent('Hero') 识别）。
  */
 @ccclass('Hero')
 export class Hero extends Component {
   @property({ tooltip: '移动速度（世界单位/秒）' })
-  moveSpeed = 8;
+  moveSpeed = 6;
 
   @property({ tooltip: '最大携带量，装满后停止拾取' })
-  capacity = 240;
+  capacity = 200;
 
-  @property({
-    tooltip: '倍率门可把携带撑到 capacity × 该系数。'
-      + '给 ×2 留出真实收益，同时为反复进出刷门设一个硬顶',
-  })
-  overflowFactor = 2;
-
-  @property({ tooltip: '转身平滑系数，0 = 不转身' })
+  @property({ tooltip: '朝移动方向转身的插值系数，0 = 不转身' })
   turnLerp = 12;
 
   @property({ tooltip: '活动区半宽 X' })
-  boundX = 4.8;
+  boundX = 6;
 
-  @property({ tooltip: '活动区 Z 下限（靠近投递区一侧）' })
-  minZ = -22.5;
+  @property({ tooltip: '活动区 Z 最小值' })
+  minZ = -26;
+  @property({ type: CCFloat, tooltip: '活动区 Z 最大值' })
+  maxZ = 12;
 
-  @property({ tooltip: '活动区 Z 上限（出生点一侧）' })
-  maxZ = 11;
-
-  /** 当前携带量（浮点，显示时取整） */
+  /** 当前携带量（浮点，便于平滑拾取；显示时取整） */
   carrying = 0;
 
   private _dir = new Vec3();
   private _start = new Vec3();
-  private _yaw = 180;   // 出生时朝向 -Z（投递区方向）
-  private _frozen = false;
+  private _moving = false;
 
   get freeSpace(): number {
     return Math.max(0, this.capacity - this.carrying);
@@ -53,34 +46,31 @@ export class Hero extends Component {
 
   onLoad() {
     this.node.getPosition(this._start);
-    this.node.setRotationFromEuler(0, this._yaw, 0);
     EventBus.on(GameEvents.MOVE_DIR, this.onDir, this);
     EventBus.on(GameEvents.MOVE_STOP, this.onStop, this);
-    EventBus.on(GameEvents.LEVEL_FINISHED, this.onFinished, this);
+    EventBus.on(GameEvents.INPUT_START, this.onInputStart, this);
     EventBus.on(GameEvents.LEVEL_RESET, this.onReset, this);
   }
 
-  onDestroy() { EventBus.targetOff(this); }
+  onDestroy() {
+    EventBus.targetOff(this);
+  }
 
   update(dt: number) {
-    if (this._frozen) return;
-    const dx = this._dir.x, dz = this._dir.z;
-    if (dx === 0 && dz === 0) return;
+    if (!this._moving || (this._dir.x === 0 && this._dir.z === 0)) return;
     const p = this.node.position;
-    this.node.setPosition(
-      math.clamp(p.x + dx * this.moveSpeed * dt, -this.boundX, this.boundX),
-      p.y,
-      math.clamp(p.z + dz * this.moveSpeed * dt, this.minZ, this.maxZ),
-    );
-
+    const x = math.clamp(p.x + this._dir.x * this.moveSpeed * dt, -this.boundX, this.boundX);
+    const z = math.clamp(p.z + this._dir.z * this.moveSpeed * dt, this.minZ, this.maxZ);
+    this.node.setPosition(x, p.y, z);
     if (this.turnLerp > 0) {
-      const goal = Math.atan2(dx, dz) * 180 / Math.PI;
-      this._yaw += this.shortestAngle(this._yaw, goal) * Math.min(1, dt * this.turnLerp);
-      this.node.setRotationFromEuler(0, this._yaw, 0);
+      const yaw = Math.atan2(this._dir.x, this._dir.z) * 180 / Math.PI;
+      const cur = this.node.eulerAngles;
+      const ny = cur.y + this.shortestAngle(cur.y, yaw) * Math.min(1, dt * this.turnLerp);
+      this.node.setRotationFromEuler(0, ny, 0);
     }
   }
 
-  /** 资源点调用：请求装入 amount，返回实际接受量 */
+  /** 资源点调用：请求装入 amount，返回实际接受量（受剩余容量限制） */
   addCarry(amount: number): number {
     const accepted = Math.min(amount, this.freeSpace);
     if (accepted <= 0) return 0;
@@ -99,15 +89,10 @@ export class Hero extends Component {
     return given;
   }
 
-  /**
-   * 倍率门调用。允许超出 capacity（否则满载时穿门毫无收益），
-   * 但封顶在 capacity × overflowFactor，避免来回刷门无限翻倍。
-   */
+  /** 倍率门调用 */
   multiplyCarry(factor: number) {
     if (this.carrying <= 0) return;
-    const ceiling = this.capacity * this.overflowFactor;
-    if (this.carrying >= ceiling) return;
-    this.carrying = Math.min(this.carrying * factor, ceiling);
+    this.carrying = Math.min(this.carrying * factor, this.capacity);
     this.emitCarry();
     EventBus.emit(GameEvents.GATE_PASSED, factor, this.carrying);
   }
@@ -126,18 +111,19 @@ export class Hero extends Component {
     EventBus.emit(GameEvents.CARRY_CHANGED, this.carrying, this.capacity);
   }
 
-  /** 摇杆给的是屏幕方向，这里映射到世界 XZ：上 = -Z（朝投递区） */
-  private onDir(x: number, y: number) { this._dir.set(x, 0, -y); }
+  private onDir(x: number, z: number) {
+    this._moving = true;
+    this._dir.set(x, 0, z);
+  }
   private onStop() { this._dir.set(0, 0, 0); }
-  private onFinished() { this._frozen = true; this._dir.set(0, 0, 0); }
+  private onInputStart() { this._moving = true; }
 
   private onReset() {
-    this._frozen = false;
+    this._moving = false;
     this._dir.set(0, 0, 0);
     this.carrying = 0;
-    this._yaw = 180;
     this.node.setPosition(this._start);
-    this.node.setRotationFromEuler(0, this._yaw, 0);
+    this.node.setRotationFromEuler(0, 0, 0);
     this.emitCarry();
   }
 

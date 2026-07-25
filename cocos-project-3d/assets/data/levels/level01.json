@@ -1,0 +1,13 @@
+{
+  "fields": [
+    { "x": 0, "z": 4, "nodeCount": 28, "radiusX": 5.5, "radiusZ": 9, "amountMin": 25, "amountMax": 55 }
+  ],
+  "gates": [
+    { "x": 0, "z": -6, "width": 8.1, "multiplier": 2 }
+  ],
+  "hazards": [
+    { "x": 0, "z": -12, "width": 18, "lossRatio": 1 }
+  ],
+  "delivery": { "x": 0, "z": -24, "rate": 140 },
+  "targetScore": 0
+}

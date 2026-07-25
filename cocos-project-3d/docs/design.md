@@ -1,153 +1,138 @@
-# Canyon Courier 3D — 架构设计
+# Canyon Dozer — Cocos Creator 模块化重构设计
 
-Cocos Creator 3.8+ 3D 工程。模块像 UE 蓝图一样拆分：
-**每个玩法元素是独立组件 + 编辑器可调 `@property`，模块之间只通过事件通信。**
+目标：把 three.js 原版重做为 Cocos Creator 3.8+ 项目，各玩法模块像 UE 蓝图一样
+**预制成可拖拽资产、参数在编辑器面板可调、模块间靠事件连线**。
 
 ## 玩法模型：快递员自动收集
 
-**玩家唯一操作 = 摇杆操纵主角在 XZ 平面走位。** 其余全自动：
+**玩家唯一操作 = 操纵主角走位。** 其余全自动，追求"爽"：
 
-- 靠近资源点 → **自动持续装货**，水晶堆在铲刀前方越堆越高；
-- 走进投递区 → **自动持续卸货计分**，分数滚动增长；
-- 带货穿倍率门 → **整堆翻倍**（可超出 capacity，封顶 capacity × overflowFactor）；
-- 带货踩岩浆 → **掉光**，中央留有安全通道，走位要绕。
+- 主角靠近资源点 → **自动、持续拾取**，携带量飞涨；
+- 主角走进投递区 → **自动、持续卸货计分**，数字狂蹦；
+- 主角带货穿过倍率门 → **携带量整体翻倍**（多门叠乘，可来回刷）；
+- 主角带货踩进危险区（岩浆）→ **掉光携带**，走位要绕开。
 
-资源点由抖动网格撒满全场（`nodeCount` 一调就密集），捡空后自动补充。
+资源点由撒布器铺满全场（`nodeCount` 一调就密集），且捡空后自动补充，
+保证一路有货可捡 —— 直接解决原型"资源点太少、不够爽"。
 
-## 为什么世界里没有模型资源
+## 蓝图能力 → Cocos 对应
 
-推土机、水晶、岩壁、岩浆、门、投递台全部由 `Prims` 用 Cocos 内置的参数化几何体
-（box / sphere / cylinder / torus / plane）在运行时拼出来，材质也用代码创建。
-好处：工程丢进编辑器就能跑，不需要美术资源管线，也不需要手工拼 Prefab。
-
-`Prims` 对网格和材质都做了缓存 —— 同色物件共享材质，同类物件共享单位网格
-（靠节点缩放变形），所以几百个物件也只有很少的 draw call。
-低多边形观感来自刻意压低的 `segments`（岩石/水晶用 4~5 段的球）。
-
-灯光用主光 + 补光两盏平行光塑形，没有开实时阴影（见 README 里的开启方式），
-这样不必在运行时改动场景全局设置。
-
-## 为什么不用物理系统
-
-这是一个贴地行走的游戏，资源/投递/门/岩浆的判定都发生在 **XZ 平面**上，
-是简单的圆或矩形重叠。距离判定比挂一整套 PhysX 更轻、更好调，
-也省掉了碰撞分组配置。
-
-`TriggerZone` 因此自己做重叠检测：`TriggerActor`（挂在主角上）注册进静态表，
-每个 `TriggerZone` 每帧检一次。API 与物理触发器一致（`overlapping` 集合 +
-ENTER/EXIT 事件），玩法模块感知不到差别。
-
-`TriggerZone` 标了 `@executionOrder(-100)`，保证重叠状态早于读取它的
-`ResourceNode` / `DeliveryZone` 刷新。
+| UE 蓝图 | Cocos Creator |
+| --- | --- |
+| 蓝图类（封装 Actor） | Prefab |
+| Details 面板暴露参数 | `@property` 装饰器 |
+| 事件引脚连线 | TriggerZone + EventBus / `@property(EventHandler)` 编辑器绑定 |
+| DataAsset | JSON 关卡配置（`assets/data/levels/`）+ LevelLoader |
 
 ## 架构总览
 
 ```
-输入层  MoveInput（浮动摇杆，只输出屏幕方向）──MOVE_DIR / MOVE_STOP──▶ EventBus
-主角    Hero：把屏幕方向映射为世界 XZ（屏幕上 = -Z）+ 转向 + 携带量账本
-        对外暴露 addCarry / takeCarry / multiplyCarry / dropAll，由各区调用
-玩法层  ResourceNode（靠近自动装货，捡空自动补充）
-        DeliveryZone（进入自动卸货计分）
-        MultiplierGate（带货穿门整堆翻倍）
-        Hazard（带货踩入掉货）
-        —— 全部基于 TriggerZone
-撒布    ResourceField：抖动网格撒满 nodeCount 个 ResourceNode
-流程层  GameFlow（状态机 + 总分 + 目标分/限时判定）
+输入层  MoveInput（浮动摇杆，只输出方向）──MOVE_DIR / MOVE_STOP──▶ EventBus
+主角    Hero：按方向走位 + 携带量账本；对外暴露 addCarry/takeCarry/multiplyCarry/dropAll
+玩法层  ResourceNode（资源点，靠近自动拾取，捡空自动补充）
+        DeliveryZone（投递区，进入自动卸货计分）
+        MultiplierGate（带货穿门翻倍）  Hazard（带货踩入掉货）
+        全部基于 TriggerZone（通用触发区，含持续 overlapping 集合）
+撒布    ResourceField：把大量 ResourceNode 铺满场地
+流程层  GameFlow（状态机 + 总分 + 目标分判定）
 表现层  HUD / CameraFollow / CarryStack —— 只订阅事件，不引用玩法模块
-工具层  Prims（几何体/材质，带缓存）、Sprites（UI 图）
-装配    Bootstrap：运行时把上面这些搭成完整场景
+数据层  LevelLoader + level01.json —— 按配置摆 Prefab，A/B 变体只改 JSON
 ```
 
-模块间**没有任何直接引用**。主角不认识资源点，是各区在自己的 `update` 里
-读 `TriggerZone.overlapping`，反过来调 Hero 的公开方法转移资源。
-
-## 坐标与朝向约定
-
-- 主角朝 **-Z** 方向前进（投递区在 -Z 端，出生点在 +Z 端）。
-- 摇杆输出屏幕方向 `(x, y)`，`Hero` 内部映射为 `(x, 0, -y)` —— 屏幕上 = 世界 -Z。
-- 推土机模型朝 **+Z** 搭建（铲刀在 +Z），所以 `yaw = atan2(dirX, dirZ)` 即可对准移动方向，
-  出生朝向 yaw = 180°（面朝 -Z）。
-- 相机俯角 60°，`z 偏移 = 高度 / tan(60°)`，这样正好对准主角。
-  俯角越大越接近正上方俯视，z 方向的视野拉伸越小。
+模块间**没有任何直接引用**，全部经 `EventBus`（`cc.EventTarget`）通信。
+主角不认识资源点/投递区：由这些区在自己的 `update` 里读 TriggerZone 的
+`overlapping` 集合，反过来调用 Hero 的公开方法转移资源。删任一 Prefab 都不报错。
 
 ## 事件清单（GameEvents.ts）
 
 | 事件 | 发送方 | 订阅方 | 载荷 |
 | --- | --- | --- | --- |
-| `input-start` | MoveInput | GameFlow, HUD | — |
-| `move-dir` | MoveInput | Hero | dirX, dirY（屏幕方向） |
+| `input-start` | MoveInput | GameFlow, Hero, HUD | — |
+| `move-dir` | MoveInput | Hero | dirX, dirZ |
 | `move-stop` | MoveInput | Hero | — |
 | `resource-picked` | Hero | （特效/音效可订阅） | 本帧量, 携带量 |
 | `carry-changed` | Hero | HUD, CarryStack | carrying, capacity |
 | `gate-passed` | Hero | HUD | 倍率, 翻倍后携带量 |
-| `carry-lost` | Hero | HUD | 损失量 |
-| `delivered` | DeliveryZone | GameFlow | 本帧量, 该区累计 |
+| `carry-lost` | Hero | （特效可订阅） | 损失量 |
+| `delivered` | DeliveryZone | GameFlow, HUD | 本帧量, 该区累计 |
 | `score-changed` | GameFlow | HUD | 总分 |
-| `level-finished` | GameFlow / 终点区 | GameFlow, Hero, HUD | — |
+| `level-finished` | GameFlow / 终点区 | GameFlow, HUD | — |
 | `level-reset` | GameFlow.restart() | 所有模块 | — |
 
-## 组件属性表
+## Prefab 属性表
 
 ### TriggerZone（core，积木基座）
+同节点须挂 isTrigger 的 Collider。资源点/投递区/门/危险区/终点线全由它拼装。
+新增：`overlapping: Set<Node>` 供持续检测的模块按帧读取，并发 ENTER/EXIT 本地事件。
+
 | 属性 | 默认 | 说明 |
 | --- | --- | --- |
-| shape | CIRCLE | CIRCLE（XZ 距离）/ BOX（XZ 半宽半长） |
-| radius | 2 | 圆柱判定半径 |
-| halfX / halfZ | 3 / 1 | 长方体半宽/半长 |
+| filter | ANY | ANY / HERO / RESOURCE |
 | oncePerTarget | false | 离散事件设 true；持续检测保持 false |
 | eventName | '' | 进入时广播到 EventBus 的事件名 |
-| onEnterHandlers | [] | 编辑器直连回调（蓝图式连线） |
+| onEnterHandlers | [] | 编辑器直连回调 |
 
-### Hero
-| moveSpeed | 8 | 移动速度（单位/秒） |
-| capacity | 240 | 最大携带量（限制拾取） |
-| overflowFactor | 2 | 倍率门可撑到 capacity × 该值；同时是刷门的硬顶 |
-| turnLerp | 12 | 转身平滑，0 = 不转身 |
-| boundX / minZ / maxZ | 4 / -21 / 10 | 活动区范围 |
+### Hero（主角）
+| moveSpeed | 6 | 移动速度 |
+| capacity | 200 | 最大携带量 |
+| turnLerp | 12 | 朝移动方向转身平滑，0=不转 |
+| boundX / minZ / maxZ | 6 / -26 / 12 | 活动区范围 |
 
-### ResourceNode / ResourceField
-| amount / pickupRate | 40 / 70 | 单点资源量与每秒拾取速度 |
-| respawns / respawnDelay | true / 3.5 | 捡空后自动补充 |
-| nodeCount | 30 | 资源点个数（控制密度） |
-| halfX / halfZ | 3.5 / 5.8 | 撒布范围 |
-| pickupRadius | 1.8 | 拾取范围 |
-| jitter | 0.62 | 0 = 规整网格，1 = 完全随机 |
+### ResourceNode（资源点）
+| amount | 40 | 初始量（撒布器会随机覆盖） |
+| pickupRate | 60 | 每秒拾取速度，越大越爽 |
+| respawns / respawnDelay | true / 3 | 捡空后自动补充 |
+| pileVisual | — | 表现模型，按剩余量缩放 |
 
-> 早先用"随机取点 + 最小间距重试"撒布，密集配置下会撒不满
-> （要 30 个只落 19 个，`nodeCount` 形同虚设），已改为抖动网格，点数精确。
+### ResourceField（撒布器）
+| nodePrefab / nodeCount | — / 24 | 资源点 Prefab 与个数（调它控制密度） |
+| shape / radiusX / radiusZ | RECT / 5.5 / 9 | 撒布形状与范围 |
+| amountMin / amountMax | 25 / 55 | 每点资源量区间 |
+| minSpacing | 1.6 | 防重叠最小间距 |
 
-### DeliveryZone / MultiplierGate / Hazard
-| deliverRate | 170 | 每秒投递速度 |
-| multiplier | 2 | 穿门时携带量乘该倍率 |
-| lossRatio | 1 | 踩入损失比例 |
+### DeliveryZone（投递区）
+| deliverRate | 120 | 每秒投递速度 |
+| finishOnDeliver | false | 是否投递即通关 |
 
-### CarryStack / CameraFollow / GameFlow
-| maxVisible / perRow / rowsPerLayer | 42 / 5 / 3 | 铲刀前的水晶堆排布 |
-| offset / followLerp / followXRatio | (0,14,8.1) / 6 / 0.45 | 相机跟随 |
-| targetScore / timeLimit | 0 / 0 | >0 时启用目标分 / 限时 |
+### MultiplierGate
+| multiplier | 2 | 带货穿门时携带量乘该倍率 |
 
-## 关卡布局
+### Hazard
+| lossRatio | 1 | 踩入损失比例（1=全掉） |
 
-`Bootstrap.ts` 顶部的 `L` 常量表就是关卡配置。自 +Z 向 -Z：
-出生点(z=9) → 资源区(z=0.5±5.8) → 岩浆带(z=-8.5，中央留 |x|<1.9 的通道)
-→ 倍率门(z=-13，|x|<2.1) → 投递区(z=-19)。
+### CarryStack（携带堆表现）
+| itemPrefab / maxVisible / perRow / spacing / unitsPerItem | — | 随携带量在主角身上堆方块 |
 
-两条设计约束，改布局时要保持：
-- 资源区靠出生点一侧的边缘与出生点的间距必须 > 拾取半径，否则**开局就自动装货**，
-  重开后也会立刻又装上。
-- 倍率门比场地窄（门 ±2.1，场地 ±4.0），所以过了岩浆后可以横move 绕开门 ——
-  这保证"穿门"是一个位置选择而不是必经之路。
+### CameraFollow
+| target / followLerp / followX | — | 跟随主角 X/Z；LEVEL_RESET 硬切回位 |
 
-## 已验证的行为
+### GameFlow
+| targetScore | 0 | 目标分，>0 达到即通关；0=纯计分/靠终点线 |
 
-`tools/sim` 用假 cc 运行时跑完整链路，28 项断言全过（`npm test`）：
-资源撒满 30 个 / 靠近自动装货 / 容量封顶 / 岩浆掉货 / 中央通道不掉货 /
-穿门翻倍且满载仍有收益 / 反复刷门被封顶 / 侧面绕门不翻倍 / 投递计分对账 /
-捡空自动补充 / 摇杆方向到世界 XZ 的映射 / 通关冻结 / 重开归位。
+## 关卡装配的两种方式
 
-## 下一步可加的决策深度
+1. **编辑器手摆**：Prefab 拖进场景，属性面板调参 —— 最接近蓝图工作流。
+2. **JSON 数据驱动**：LevelLoader 按 `assets/data/levels/*.json` 实例化，适合出 A/B 变体。
 
-当前"穿门"没有代价，理性玩家总会穿。想要真正的取舍，最自然的加法是
-**并排多条门道**（同一 z 上放 2~3 个 `MultiplierGate`，倍率不同），
-并把高倍率那条放在岩浆缺口更窄的一侧 —— 只需在 `Bootstrap.buildGate` 里
-多摆几个节点、各自设 `multiplier`，玩法代码不用改。
+终点结算三选一：投递区设 `finishOnDeliver`、GameFlow 设 `targetScore`，
+或在终点摆 `filter=HERO, eventName=level-finished` 的 TriggerZone。
+
+## 相比 three.js 原版修复/改进
+
+| 原版问题 | 本方案 |
+| --- | --- |
+| 资源点太少、场面稀疏、不够爽 | ResourceField 撒满全场 + 自动补充 + 快速拾取，携带堆可视化增长 |
+| 主角交互不对（手动推 / 铲刀伪物理） | 主角只走位，靠近自动拾取、到点自动投递、穿门自动翻倍 |
+| 倍率门只判推土机 z 坐标，是装饰 | 门宽即碰撞盒，带货真实穿门翻倍、可叠乘、可刷 |
+| 收集区只判 z<-19.3 一条线 | 投递区触发碰撞体，进入才计分 |
+| 岩浆无任何效果 | 踩入掉光携带，形成绕行决策 |
+| 重开一局相机慢慢飘回 | CameraFollow 在 LEVEL_RESET 硬切回位 |
+| 未处理 pointercancel | MoveInput 监听 TOUCH_CANCEL |
+
+## 物理与性能建议
+
+- 物理引擎选 **PhysX**（Creator 3.x 默认）。主角挂 Kinematic RigidBody + 普通
+  Collider；资源点/投递区/门/危险区挂 isTrigger Collider，靠碰撞检测主角。
+- 资源"堆"是**抽象计数 + 缩放表现**，不再是上百个刚体宝石，性能远好于原型。
+- 携带堆用 CarryStack 对象池，`maxVisible` 封顶，避免携带量很大时方块爆炸。
+- 分组建议：`HERO` / `TRIGGER` / `GROUND`，碰撞矩阵里只保留必要项。
