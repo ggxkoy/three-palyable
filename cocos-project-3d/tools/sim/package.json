@@ -1,0 +1,12 @@
+{
+  "name": "canyon-courier-sim",
+  "private": true,
+  "version": "1.0.0",
+  "description": "无头玩法验证：用假的 cc 运行时在 Node 里跑玩法逻辑，不需要打开 Cocos Creator",
+  "scripts": {
+    "test": "tsc -p tsconfig.json && node run.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

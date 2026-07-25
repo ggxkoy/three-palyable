@@ -194,6 +194,29 @@ function tween(target) {
   return chain;
 }
 
+
+// ---- 3D 相关替身 ----
+class Mesh {}
+class Material {
+  initialize() {} setProperty() {}
+}
+class MeshRenderer extends Component {
+  constructor() { super(); this.mesh = null; this.material = null; }
+}
+MeshRenderer.ShadowCastingMode = { OFF: 0, ON: 1 };
+MeshRenderer.ShadowReceivingMode = { OFF: 0, ON: 1 };
+class DirectionalLight extends Component {
+  constructor() { super(); this.color = new Color(); this.illuminance = 0; }
+}
+const primitives = {
+  box: () => ({ positions: [] }),
+  sphere: () => ({ positions: [] }),
+  cylinder: () => ({ positions: [] }),
+  torus: () => ({ positions: [] }),
+  plane: () => ({ positions: [] }),
+};
+const utils = { MeshUtils: { createMesh: () => new Mesh() } };
+
 // ---- 供测试驱动的主循环 ----
 function step(dt) {
   for (const c of ENGINE.pendingStart.splice(0)) c.start && c.start();
@@ -213,5 +236,6 @@ module.exports = {
   Scene, UITransform, SpriteFrame, Sprite, UIOpacity, Label, Button, Camera,
   Canvas, Widget, EventHandler, EventTouch, Input, input, Layers, Director,
   director, ResolutionPolicy, view, resources, tween,
+  Mesh, Material, MeshRenderer, DirectionalLight, primitives, utils,
   __sim: { step, ENGINE, scene: _scene },
 };
